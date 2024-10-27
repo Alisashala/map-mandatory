@@ -1,56 +1,79 @@
 import { StatusBar } from 'expo-status-bar';
-import { StyleSheet, View } from 'react-native';
+import { StyleSheet, View, Alert } from 'react-native';
 import MapView, { Marker } from 'react-native-maps';
 import { useState } from 'react';
 import { app } from './firebase';
-import { collection, addDoc } from 'firebase/firestore';
-import { getFirestore } from "firebase/firestore"; // Ensure Firestore is imported
+import { collection, addDoc, getFirestore } from 'firebase/firestore';
+import * as ImagePicker from 'expo-image-picker';
+import { getStorage, ref, uploadBytes, getDownloadURL } from 'firebase/storage';
 
 export default function App() {
   const [markers, setMarkers] = useState([]);
-
-  const [region, setRegion] = useState({
-    latitude: 56.2639,
-    longitude: 9.5018,
-    latitudeDelta: 5,
-    longitudeDelta: 5
+  const [region] = useState({
+    latitude: 56.2639, longitude: 9.5018,
+    latitudeDelta: 5, longitudeDelta: 5
   });
 
-  // Firestore reference
-  const database = getFirestore(app); // Initialize Firestore
-  console.log('Firestore initialized:', database); // Check if Firestore is initialized correctly
+  const db = getFirestore(app);
+  const storage = getStorage(app);
 
-  // Function to add a new marker on the map
+  // Creates a new marker and triggers image selection
   function addMarker(data) {
     const { latitude, longitude } = data.nativeEvent.coordinate;
     const newMarker = {
       coordinate: { latitude, longitude },
       key: data.timeStamp,
-      title: "Great place!"
+      title: "Great place!",
+      image: null
     };
-    setMarkers([...markers, newMarker]);
-    console.log('Marker added:', newMarker); // Log marker details
+    setMarkers(prev => [...prev, newMarker]);
+    handleImageSelection(newMarker);
   }
 
-  // Function to handle marker press and save data to Firestore
-  async function onMarkerPressed(marker) {
-    const { latitude, longitude } = marker.coordinate;
-    const imageId = "some_image_id"; // Placeholder for image ID (replace this later)
+  // Uploads selected image to Firebase Storage and returns download URL
+  async function uploadImage(uri, imageId) {
+    const response = await fetch(uri);
+    const blob = await response.blob();
+    const imageRef = ref(storage, `images/${imageId}`);
+    await uploadBytes(imageRef, blob);
+    return await getDownloadURL(imageRef);
+  }
 
-    console.log('Marker pressed:', marker); // Log marker press
-    console.log(`Saving to Firestore: Latitude: ${latitude}, Longitude: ${longitude}`);
-
+  // Handles image selection process and updates marker with image URL
+  async function handleImageSelection(marker) {
     try {
-      // Store the location and image ID in Firestore
-      await addDoc(collection(database, "locations"), {
-        location: { latitude, longitude },
-        image: imageId // Placeholder for image ID
+      const { granted } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (!granted) return Alert.alert("Permission to access camera roll is required!");
+
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ImagePicker.MediaTypeOptions.Images,
+        allowsEditing: true,
+        aspect: [4, 3],
+        quality: 1,
       });
-      console.log('Location successfully added to Firestore!'); 
-      alert("Location added to Firestore!");
+
+      if (!result.canceled) {
+        const imageUrl = await uploadImage(result.assets[0].uri, marker.key.toString());
+        setMarkers(prev => prev.map(m => 
+          m.key === marker.key ? { ...m, image: imageUrl } : m
+        ));
+        await saveToFirestore(marker.coordinate, imageUrl);
+      }
+    } catch (error) {
+      Alert.alert('Error', 'Failed to process image: ' + error.message);
+    }
+  }
+
+  // Saves marker location and image URL to Firestore
+  async function saveToFirestore(coordinate, imageUrl) {
+    try {
+      await addDoc(collection(db, "locations"), {
+        location: { ...coordinate },
+        image: imageUrl
+      });
+      Alert.alert('Success', 'Location and image saved!');
     } catch (err) {
-      console.log("Error saving to Firestore:", err); 
-      alert("Error saving to Firestore: " + err.message);
+      Alert.alert("Error", "Failed to save data.");
     }
   }
 
@@ -59,26 +82,27 @@ export default function App() {
       <MapView
         style={styles.map}
         region={region}
-        onLongPress={addMarker} 
+        onLongPress={addMarker}
       >
-        {
-          markers.map(marker => (
-            <Marker
-              coordinate={marker.coordinate}
-              key={marker.key}
-              title={marker.title}
-              onPress={() => onMarkerPressed(marker)} 
-            />
-          ))
-        }
+        {markers.map(marker => (
+          <Marker
+            key={marker.key}
+            coordinate={marker.coordinate}
+            title={marker.title}
+            description={marker.image ? 'Image attached' : 'No image attached'}
+            onPress={() => Alert.alert(
+              "Marker Details",
+              marker.image ? `Image URL: ${marker.image}` : marker.title
+            )}
+          />
+        ))}
       </MapView>
+      <StatusBar style="auto" />
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  map: {
-    width: '100%',
-    height: '100%'
-  }
+  container: { flex: 1 },
+  map: { width: '100%', height: '100%' }
 });
